@@ -15,7 +15,7 @@ def login(path):
 
 if __name__ == '__main__':
     script_path = os.path.dirname(os.path.abspath(__file__))
-    ip = '10.1.123.254'
+    ip = 'www.baidu.com'
     success = False
     while not success:
         if not is_connect_internet(ip):

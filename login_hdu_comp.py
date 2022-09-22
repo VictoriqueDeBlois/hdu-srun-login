@@ -1,16 +1,21 @@
 #!/usr/bin/env python
 # coding=utf-8
 import argparse
+import base64
 import hashlib
 import hmac
 import json
+import logging
 import math
+import os
 import re
 import sys
 import time
-import base64
 
 if sys.version[0] == '2':
+    reload(sys)
+    sys.setdefaultencoding('utf-8')
+
     import urllib
     import urllib2
 
@@ -199,6 +204,33 @@ class Login:
         self.i = ''
         self.hmd5 = ''
         self.chksum = ''
+        self._create_logger()
+
+    @property
+    def log_path(self):
+        filename = os.path.split(__file__)[-1]
+        name = os.path.splitext(filename)[0]
+        return name + '.log'
+
+    def _create_logger(self):
+        self.logger = logging.getLogger('logger')
+
+        formatter = logging.Formatter("%(asctime)s - %(levelname)s]: %(message)s")
+
+        logger_handler = logging.FileHandler(self.log_path, "a", encoding='utf-8')
+        logger_handler.setLevel(logging.INFO)
+        logger_handler.setFormatter(formatter)
+
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(formatter)
+
+        for h in self.logger.handlers:
+            self.logger.removeHandler(h)
+
+        self.logger.addHandler(logger_handler)
+        self.logger.addHandler(console_handler)
+        self.logger.setLevel(logging.INFO)
 
     def get_chksum(self):
         chkstr = self.token + self.username
@@ -225,7 +257,7 @@ class Login:
     def init_getip(self):
         init_res = request_get(self.init_url, headers=self.header)
         self.ip = re.search(r'ip\s*:\s*"(.*?)"', init_res).group(1)
-        print("ip:" + self.ip)
+        self.logger.info("本机ip为%s", self.ip)
 
     def get_token(self):
         get_challenge_params = {
@@ -237,7 +269,17 @@ class Login:
         get_challenge_res = request_get(self.init_url + self.get_challenge_api,
                                         params=get_challenge_params,
                                         headers=self.header)
-        self.token = re.search('"challenge":"(.*?)"', get_challenge_res).group(1)
+        m = re.match(r'jQuery[\d_]+\((.+?)\)', get_challenge_res)
+        if m:
+            res_json = json.loads(m.group(1))
+            if 'challenge' in res_json:
+                self.token = res_json['challenge']
+                return True
+            else:
+                self.logger.error("错误信息: %s | 可能是MAC地址封锁, 建议修改MAC地址", res_json['error'])
+        else:
+            self.logger.error("无法解析挑战请求返回的信息")
+        return False
 
     def do_complex_work(self):
         self.i = self.get_info()
@@ -260,18 +302,17 @@ class Login:
             'info': self.i,
             'n': self.n,
             'type': self.type,
-            'os': 'windows+10',
-            'name': 'windows',
+            'os': 'linux',
+            'name': 'ltserver',
             'double_stack': '0',
             '_': int(time.time() * 1000)
         }
 
-    @staticmethod
-    def print_msg(resp, info):
+    def print_msg(self, resp, info):
         out = ''
         if info in resp:
             out = info + ": " + resp[info]
-            print(out)
+            self.logger.info(out)
         return out
 
     def login(self):
@@ -280,24 +321,23 @@ class Login:
                                       params=srun_portal_params,
                                       headers=self.header)
         resp = self.convert_json(srun_portal_res)
-        print('==login' + '=' * 13)
-        self.print_msg(resp, 'error')
-        self.print_msg(resp, 'error_msg')
-        self.print_msg(resp, 'suc_msg')
-        print('=' * 20)
+        self.logger.info("登录")
+        self.print_msg(resp, "error")
+        self.print_msg(resp, "error_msg")
+        self.print_msg(resp, "suc_msg")
 
     def login_test(self):
         res = request_get(self.init_url + self.get_info_api,
                           headers=self.header)
         resp = self.convert_json(res)
-        print('==login check' + '=' * 7)
+        self.logger.info('登录成功检测')
         log = self.print_msg(resp, 'error')
-        print('=' * 20)
         return log
 
     def all_login(self):
         self.init_getip()
-        self.get_token()
+        if not self.get_token():
+            return
         self.do_complex_work()
         self.login()
         self.login_test()
@@ -311,10 +351,10 @@ class Login:
 
 def arg_parse():
     parser = argparse.ArgumentParser()
-    parser.add_argument('username', help='HDU Student Number', nargs='?', default='')
-    parser.add_argument('password', help='HDU Account Password', nargs='?', default='')
+    parser.add_argument('username', help='杭电学号', nargs='?', default='')
+    parser.add_argument('password', help='账号密码', nargs='?', default='')
     parser.add_argument('-s', '--save', action='store_true',
-                        help='save account info. load saved info when username is empty')
+                        help='保存账号密码信息, 当学号为空时尝试载入保存信息')
     return parser
 
 
@@ -339,15 +379,19 @@ def load_account():
 if __name__ == '__main__':
     _parser = arg_parse()
     args = _parser.parse_args()
+
+    login = Login('', '')
+
     user, pw = args.username, args.password
     if args.username == '':
         try:
             user, pw = load_account()
         except IOError as e:
-            print("can't find saved account info")
+            login.logger.error("找不到保存的账号信息")
             _parser.print_help()
             exit(0)
     if args.save:
         save_account(user, pw)
-    login = Login(user, pw)
+    login.username = user
+    login.password = pw
     login.all_login()
